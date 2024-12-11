@@ -1,0 +1,159 @@
+import sys
+from PyQt5 import QtCore, QtGui, QtWidgets
+
+
+# Placeholder for storing registered users
+registered_users = {}
+
+
+class SignUpForm(QtWidgets.QWidget):
+    """A form where users can sign up by entering a username and password."""
+    def __init__(self):
+        super(SignUpForm, self).__init__()
+
+        self.setWindowTitle("Sign Up")
+        self.resize(450, 300)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        # Instructions
+        instructions = QtWidgets.QLabel("Create a new account", self)
+        instructions.setAlignment(QtCore.Qt.AlignCenter)
+        font = QtGui.QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        instructions.setFont(font)
+        layout.addWidget(instructions)
+
+        # Username Input
+        self.username_input = QtWidgets.QLineEdit(self)
+        self.username_input.setPlaceholderText("Enter Username")
+        self.username_input.setFont(QtGui.QFont("Monospac821 BT", 10))
+        layout.addWidget(self.username_input)
+
+        # Password Input
+        self.password_input = QtWidgets.QLineEdit(self)
+        self.password_input.setPlaceholderText("Enter Password")
+        self.password_input.setFont(QtGui.QFont("Monospac821 BT", 10))
+        self.password_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        layout.addWidget(self.password_input)
+
+        # Confirm Password Input
+        self.confirm_password_input = QtWidgets.QLineEdit(self)
+        self.confirm_password_input.setPlaceholderText("Confirm Password")
+        self.confirm_password_input.setFont(QtGui.QFont("Monospac821 BT", 10))
+        self.confirm_password_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        layout.addWidget(self.confirm_password_input)
+
+        # Register Button
+        self.register_button = QtWidgets.QPushButton("Register", self)
+        self.register_button.setFont(QtGui.QFont("Monospac821 BT", 12))
+        self.register_button.clicked.connect(self.register_user)
+        layout.addWidget(self.register_button)
+
+        # Status Label
+        self.status_label = QtWidgets.QLabel("", self)
+        self.status_label.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.status_label)
+
+    def register_user(self):
+        """Registers a new user."""
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        confirm_password = self.confirm_password_input.text()
+
+        if not username or not password:
+            self.status_label.setText("Username and password cannot be empty.")
+            self.status_label.setStyleSheet("color: red;")
+            return
+
+        if password != confirm_password:
+            self.status_label.setText("Passwords do not match.")
+            self.status_label.setStyleSheet("color: red;")
+            return
+
+        if username in registered_users:
+            self.status_label.setText("Username already exists.")
+            self.status_label.setStyleSheet("color: red;")
+            return
+
+        registered_users[username] = password
+        self.status_label.setText("Account created successfully!")
+        self.status_label.setStyleSheet("color: green;")
+        self.clear_inputs()
+
+    def clear_inputs(self):
+        """Clears the input fields."""
+        self.username_input.clear()
+        self.password_input.clear()
+        self.confirm_password_input.clear()
+
+
+class LoginForm(QtWidgets.QWidget):
+    def __init__(self):
+        super(LoginForm, self).__init__()
+
+        self.setObjectName("Form")
+        self.resize(450, 550)
+        self.setWindowTitle("Log In")
+
+        self.widget = QtWidgets.QWidget(self)
+        self.widget.setGeometry(QtCore.QRect(30, 30, 370, 480))
+
+        # Login Components
+        self.label_4 = QtWidgets.QLabel("LOG-IN", self.widget)
+        self.label_4.setGeometry(QtCore.QRect(110, 100, 151, 40))
+        font = QtGui.QFont("Monospac821 BT", 30, QtGui.QFont.Bold)
+        self.label_4.setFont(font)
+
+        self.lineEdit = QtWidgets.QLineEdit(self.widget)
+        self.lineEdit.setGeometry(QtCore.QRect(80, 165, 200, 40))
+        self.lineEdit.setPlaceholderText("User Name")
+
+        self.lineEdit_2 = QtWidgets.QLineEdit(self.widget)
+        self.lineEdit_2.setGeometry(QtCore.QRect(80, 230, 200, 40))
+        self.lineEdit_2.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.lineEdit_2.setPlaceholderText("Password")
+
+        self.pushButton = QtWidgets.QPushButton("L O G - I N", self.widget)
+        self.pushButton.setGeometry(QtCore.QRect(79, 310, 201, 40))
+        self.pushButton.clicked.connect(self.login_user)
+
+        self.label_6 = QtWidgets.QLabel("Don't have account?", self.widget)
+        self.label_6.setGeometry(QtCore.QRect(90, 380, 91, 20))
+
+        self.pushButton_2 = QtWidgets.QPushButton("Sign up", self.widget)
+        self.pushButton_2.setGeometry(QtCore.QRect(180, 380, 51, 20))
+        self.pushButton_2.clicked.connect(self.open_sign_up)
+
+        # Attempt counter
+        self.attempts_left = 3
+
+    def login_user(self):
+        """Checks login credentials."""
+        username = self.lineEdit.text().strip()
+        password = self.lineEdit_2.text()
+
+        if self.attempts_left == 0:
+            QtWidgets.QMessageBox.warning(self, "Locked", "You have reached the maximum number of login attempts.")
+            self.pushButton.setDisabled(True)  # Disable the login button
+            return
+
+        if username in registered_users and registered_users[username] == password:
+            QtWidgets.QMessageBox.information(self, "Success", "Logged in successfully!")
+            self.attempts_left = 3  # Reset attempts
+        else:
+            self.attempts_left -= 1
+            QtWidgets.QMessageBox.warning(self, "Error", f"Invalid username or password. {self.attempts_left} attempts left.")
+
+    def open_sign_up(self):
+        """Opens the Sign Up form."""
+        self.sign_up_form = SignUpForm()
+        self.sign_up_form.show()
+
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    login_form = LoginForm()
+    login_form.show()
+    sys.exit(app.exec_())
