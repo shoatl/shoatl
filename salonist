@@ -1,0 +1,1213 @@
+from datetime import datetime
+import tkinter as tk
+from tkinter import ttk, messagebox
+from tkcalendar import DateEntry
+import customtkinter
+import queue
+import threading
+import mysql.connector
+import os
+
+# Set CustomTkinter theme
+customtkinter.set_appearance_mode("dark")  # Set to dark mode
+customtkinter.set_default_color_theme("blue")  # Theme: blue, green, dark-blue, etc.
+
+class BookingQueue:
+    def __init__(self):
+        self.queue = queue.Queue()
+        self.lock = threading.Lock()
+        self.running = True
+
+    def add_booking(self, booking):
+        with self.lock:
+            self.queue.put(booking)
+
+    def process_bookings(self):
+        while self.running:
+            try:
+                booking = self.queue.get(timeout=1)
+                # Process the booking here
+                print(f"Processing booking: {booking}")
+                # Add the booking to the database
+                staff_window.add_inquiry(booking["username"], booking["email"], booking["datetime_combined"])
+                self.queue.task_done()
+            except queue.Empty:
+                pass
+
+    def stop(self):
+        self.running = False
+
+# Create a booking queue
+booking_queue = BookingQueue()
+
+# Create a thread to process bookings
+thread = threading.Thread(target=booking_queue.process_bookings)
+thread.daemon = True  # So that the thread dies when the main thread dies
+thread.start()
+
+# Database connection
+def create_db_connection():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="1234567890",
+        database="Salon_database"
+    )
+
+class BookingForm:
+    def __init__(self, staff_window):
+        self.staff_window = staff_window
+        self.create_booking_form()
+
+    def create_booking_form(self):
+        self.data = customtkinter.CTkToplevel()
+        self.data.title("Beoutique")
+        self.data.geometry("400x500")
+        self.data.configure(bg="#2E2E2E")  # Dark background
+
+        # Main frame
+        frame_booknow = customtkinter.CTkFrame(master=self.data, width=380, height=470, border_color="#6A4C93", corner_radius=15, fg_color="#3E3E3E")
+        frame_booknow.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        # Title
+        title_label = customtkinter.CTkLabel(master=frame_booknow, text="Booking Form", font=("Arial", 20, "bold"), text_color="white")
+        title_label.pack(pady=15)
+
+        # Username Entry
+        self.username_entry = customtkinter.CTkEntry(master=frame_booknow, width=300, placeholder_text="Username", font=("Arial", 14), fg_color="#4E4E4E", text_color="white")
+        self.username_entry.pack(pady=10)
+
+        # Email Entry
+        self.email_entry = customtkinter.CTkEntry(master=frame_booknow, width=300, placeholder_text="Email Address", font=("Arial", 14), fg_color="#4E4E4E", text_color="white")
+        self.email_entry.pack(pady=10)
+
+        # Date Selection
+        date_label = customtkinter.CTkLabel(frame_booknow, text="Select Date:", font=("Arial", 14), text_color="white")
+        date_label.pack(pady=5)
+
+        self.date_entry = DateEntry(frame_booknow, date_pattern="yyyy-mm-dd", width=12, font=("Arial", 12))
+        self.date_entry.pack(pady=10)
+
+        # Time Selection
+        time_label = customtkinter.CTkLabel(frame_booknow, text="Select Time (HH:MM):", font=("Arial", 14), text_color="white")
+        time_label.pack(pady=5)
+
+
+        self.time_var = tk.StringVar(value="08:00")
+
+        # Create a style for the combobox
+        style = ttk.Style()
+        style.configure("TCombobox",
+                        background="#6A4C93",  # Button color
+                        foreground="black",     # Text color
+                        font=("Montserrat", 14),
+                        bordercolor="#6A4C93",
+                        arrowcolor="white")
+        style.map("TCombobox",
+                  fieldbackground=[('readonly', '#6A4C93')],
+                  foreground=[('readonly', 'white')])
+
+        # Create the combobox with the specified style
+        time_combobox = ttk.Combobox(frame_booknow, textvariable=self.time_var, state='readonly', style="TCombobox")
+        time_options = [f"{hour:02d}:{minute:02d}" for hour in range(8, 21) for minute in [0, 30]]  # Fixed time options
+        time_combobox['values'] = time_options
+        time_combobox.pack(pady=5)
+
+        # Confirm Button
+        confirm_button = customtkinter.CTkButton(frame_booknow, text="Confirm Booking", command=self.confirm_booking, fg_color="#6A4C93", hover_color="#A17BCA", font=("Arial", 14, "bold"))
+        confirm_button.pack(pady=20)
+
+    def confirm_booking(self):
+        username = self.username_entry.get()
+        email = self.email_entry.get()
+        date = self.date_entry.get()
+        time = self.time_var.get()
+        datetime_combined = f"{date} {time}"
+
+        if username and email and date and time:
+            # Add the booking to the queue
+            booking_queue.add_booking({
+                "username": username,
+                "email": email,
+                "datetime_combined": datetime_combined
+            })
+            self.data.destroy()
+        else:
+            messagebox.showerror("Input Error", "Please fill in all fields.")
+
+
+
+class StaffWindow:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Salon Staff Window")
+        self.root.geometry("1000x700")
+        self.root.configure(bg="#2E2E2E")  # Dark background
+        self.sections = {}
+        self.last_receipt_id = self.load_last_receipt_id() 
+
+        # Service prices
+        self.service_prices = {
+            "Haircut": 30,
+            "Makeup": 50,
+            "Facial Treatment": 40,
+            "Manicure": 25,
+            "Hair Color": 60,
+            "Foot Spa": 35
+        }
+
+        # Packages with prices
+        self.packages = {
+            "Basic Package": (["Haircut", "Manicure"], 50),
+            "Premium Package": (["Makeup", "Facial Treatment"], 80),
+            "Deluxe Package": (["Hair Color", "Foot Spa", "Facial Treatment"], 120)
+        }
+
+        # Header
+        self.create_header()
+        # Navigation Bar
+        self.create_navigation()
+        # Create sections
+        self.create_inquiry_list()
+        self.create_walk_in_list()
+        self.create_appointment_list()
+        self.create_payment_section()
+        self.show_section("inquiry_list")
+
+    def create_header(self):
+        header = customtkinter.CTkFrame(self.root, height=60, fg_color="#6A4C93")
+        header.pack(fill=tk.X)
+        title = customtkinter.CTkLabel(header, text="Salon Staff Window", fg_color="transparent", text_color="white", font=("Arial", 24, "bold"))
+        title.pack(pady=15)
+
+    def create_navigation(self):
+        nav = customtkinter.CTkFrame(self.root, height=50, fg_color="#6A4C93")
+        nav.pack(fill=tk.X)
+        self.create_button(nav, "Inquiry List", lambda: self.show_section("inquiry_list"))
+        self.create_button(nav, "Walk-In", lambda: self.show_section("walk_in_list"))
+        self.create_button(nav, "Appointment List", lambda: self.show_section("appointment_list"))
+        self.create_button(nav, "Payment", lambda: self.show_section("payment"))
+        self.create_button(nav, "Logout", self.logout)
+
+    def create_button(self, parent, text, command):
+        button = customtkinter.CTkButton(parent, text=text, command=command, fg_color="#A17BCA", hover_color="#6A4C93", font=("Arial", 14, "bold"), width=150, height=40)
+        button.pack(side=tk.LEFT, padx=10, pady=5)
+
+    def show_section(self, section):
+        for sec in self.sections.values():
+            sec.pack_forget()
+        self.sections[section].pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+
+    def create_inquiry_list(self):
+        frame = customtkinter.CTkFrame(self.root, fg_color="#3E3E3E", corner_radius=15)
+        label = customtkinter.CTkLabel(frame, text="Inquiry List", font=("Arial", 20, "bold"), text_color="white")
+        label.pack(pady=10)
+
+        # Date Filtering Frame
+        self.create_date_filter(frame)
+        # Search Frame
+        self.create_search_frame(frame)
+        # Treeview for inquiry List with Scrollbars
+        self.create_inquiry_treeview(frame)
+        # Approval and Remove Buttons
+        self.create_inquiry_buttons(frame)
+
+        self.sections["inquiry_list"] = frame
+
+    def create_date_filter(self, parent):
+        filter_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        filter_frame.pack(pady=10)
+
+        filter_label = customtkinter.CTkLabel(filter_frame, text="Filter by Date:", font=("Arial", 14), text_color="white")
+        filter_label.pack(side=tk.LEFT, padx=5)
+        self.filter_date_entry = DateEntry(filter_frame, date_pattern="yyyy-mm-dd", width=12, font=("Arial", 12))
+        self.filter_date_entry.pack(side=tk.LEFT, padx=5)
+
+        filter_button = customtkinter.CTkButton(filter_frame, text="Filter", command=self.filter_inquirys,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        filter_button.pack(side=tk.LEFT, padx=5)
+
+    def create_search_frame(self, parent):
+        search_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        search_frame.pack(pady=10)
+
+        self.search_entry = customtkinter.CTkEntry(search_frame, width=300, placeholder_text="Search by Username, Email, or Date", font=("Arial", 14))
+        self.search_entry.pack(side=tk.LEFT, padx=10)
+
+        search_button = customtkinter.CTkButton(search_frame, text="Search", command=self.search_inquiry,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        search_button.pack(side=tk.LEFT)
+
+    def create_inquiry_treeview(self, parent):
+        self.inquiry_list_tree = ttk.Treeview(parent, columns=("ID", "Username", "Email", "Date & Time"), show="headings", style="Custom.Treeview")
+        for col in ("ID", "Username", "Email", "Date & Time"):
+            self.inquiry_list_tree.heading(col, text=col)
+
+        style = ttk.Style()
+        style.map("Treeview", background=[("selected", "#A17BCA")], foreground=[("selected", "WHITE")])
+
+        # Scrollbars
+        self.inquiry_list_scrollbar_y = ttk.Scrollbar(parent, orient="vertical", command=self.inquiry_list_tree.yview)
+        self.inquiry_list_scrollbar_x = ttk.Scrollbar(parent, orient="horizontal", command=self.inquiry_list_tree.xview)
+        self.inquiry_list_tree.configure(yscrollcommand=self.inquiry_list_scrollbar_y.set, xscrollcommand=self.inquiry_list_scrollbar_x.set)
+
+        self.inquiry_list_tree.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        self.inquiry_list_scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        self.inquiry_list_scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def create_inquiry_buttons(self, parent):
+        button_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        button_frame.pack(pady=10)
+
+        approval_button = customtkinter.CTkButton(button_frame, text="Approval", command=self.inquiry_inquiry, fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        approval_button.pack(side=tk.LEFT, padx=10)
+
+        remove_button = customtkinter.CTkButton(button_frame, text="Remove", command=self.remove_inquiry,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        remove_button.pack(side=tk.LEFT)
+
+    def filter_inquirys(self):
+        selected_date = self.filter_date_entry.get()
+        self.inquiry_list_tree.delete(*self.inquiry_list_tree.get_children())  # Clear existing entries
+
+        try:
+            connection = create_db_connection()
+            cursor = connection.cursor()
+            cursor.execute("SELECT id, username, email, datetime_combined FROM bookings WHERE DATE(datetime_combined) = %s", (selected_date,))
+            results = cursor.fetchall()
+            cursor.close()
+            connection.close()
+
+            for row in results:
+                self.inquiry_list_tree.insert("", "end", values=row)
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", f"Error: {err}")
+
+    def search_inquiry(self):
+        search_term = self.search_entry.get().lower()
+        for item in self.inquiry_list_tree.get_children():
+            values = self.inquiry_list_tree.item(item, "values")
+            if any(search_term in str(value).lower() for value in values):
+                self.inquiry_list_tree.selection_set(item)
+                self.inquiry_list_tree.see(item)
+            else:
+                self.inquiry_list_tree.selection_remove(item)
+
+    def create_walk_in_list(self):
+        frame = customtkinter.CTkFrame(self.root, fg_color="#3E3E3E", corner_radius=15)
+        
+        # Title Label
+        label = customtkinter.CTkLabel(frame, text="Walk-In List", font=("Arial", 20, "bold"), text_color="white")
+        label.pack(pady=10)
+
+        # Client Name Entry
+        self.walk_in_client_name_entry = self.create_entry_with_icon(frame, "Client Name:", "Enter client name", "👤", 14)
+
+        # Services Selection
+        self.walk_in_service_vars = self.create_service_selection(frame)
+
+        # Package Selection
+        self.walk_in_package_var = self.create_package_selection(frame)
+
+        # Specifications Entry
+        self.walk_in_specifications_entry = self.create_specifications_entry(frame)
+
+        self.stylist_combobox = self.create_stylist_selection(frame)
+
+        # Submit Button
+        self.create_submit_button(frame)
+
+        frame.pack(pady=20, padx=20, fill='both', expand=True)  # Ensure the frame is packed properly
+        self.sections["walk_in_list"] = frame
+
+    def create_submit_button(self, parent):
+        submit_button = customtkinter.CTkButton(
+            parent,
+            text="Submit",
+            command=self.confirm_walk_in,
+            fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20,
+            width=200,
+            height=45
+        )
+        submit_button.bind("<Enter>", lambda _: submit_button.configure(fg_color="#8B6BAC"))
+        submit_button.bind("<Leave>", lambda _: submit_button.configure(fg_color="#6A4C93"))
+        
+        # Pack the button to display it
+        submit_button.place(relx=0.5, y=500, anchor=tk.CENTER)
+        # Add padding to position the button properly
+
+    def confirm_walk_in(self):
+        client_name = self.walk_in_client_name_entry.get()
+        selected_services = [service for service, var in self.walk_in_service_vars.items() if var.get()]
+        total_price = sum(self.service_prices[service] for service in selected_services)
+        package_price = 0
+
+        if self.walk_in_package_var.get() != "None":
+            package_services, package_price = self.packages[self.walk_in_package_var.get()]
+            total_price += package_price
+
+        specifications = self.walk_in_specifications_entry.get("1.0", "end-1c").strip()
+        specifications_str = specifications if specifications else "None"
+
+        if client_name and selected_services:
+            self.appointment_list_tree.insert("", "end", values=(
+                client_name, 
+                ", ".join(selected_services), 
+                "N/A",  # No stylist for walk-ins
+                specifications_str, 
+                f"${total_price}", 
+                "Available", 
+                self.walk_in_package_var.get()
+            ))
+            self.walk_in_client_name_entry.delete(0, tk.END)
+            for var in self.walk_in_service_vars.values():
+                var.set(0)
+            self.walk_in_package_var.set("None")
+            self.walk_in_specifications_entry.delete("1.0", tk.END)
+            messagebox.showinfo("Success", "Walk-in appointment confirmed!")
+        else:
+            messagebox.showerror("Input Error", "Please fill in all required fields.")
+        
+        stylist = self.stylist_var.get()
+        if stylist != "Select Stylist":
+            # Add the stylist to the appointment
+            self.appointment_list_tree.insert("", "end", values=(
+                client_name, 
+                ", ".join(selected_services), 
+                stylist, 
+                specifications_str, 
+                f"${total_price}", 
+                "Available", 
+                self.walk_in_package_var.get()
+            ))
+        else:
+            messagebox.showerror("Input Error", "Please select a stylist.")
+
+    def create_entry_with_icon(self, parent, label_text, placeholder, icon_text, font_size):
+        input_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        input_frame.pack(pady=10, fill="x")
+
+        icon_label = customtkinter.CTkLabel(input_frame, text=icon_text, font=("Segoe UI Emoji", font_size), width=30)
+        icon_label.pack(side="left")
+
+        entry = customtkinter.CTkEntry(input_frame, placeholder_text=placeholder, font=("Montserrat", 14), fg_color="#404040", border_color="#6A4C93", width=250, height=40)
+        entry.pack(side="left")
+        entry.bind("<FocusIn>", lambda _: entry.configure(border_color="#A17BCA"))
+        return entry
+
+    def create_service_selection(self, parent):
+        services_card = customtkinter.CTkFrame(parent, fg_color="#404040", corner_radius=10)
+        services_card.pack(pady=10, fill="x", padx=20)
+
+        services_title = customtkinter.CTkLabel(services_card, text="✨ Select Services", font=("Montserrat", 16, "bold"), text_color="#A17BCA")
+        services_title.pack(pady=5)
+
+        scroll_frame = customtkinter.CTkScrollableFrame(services_card, height=150, fg_color="#404040")
+        scroll_frame.pack(fill="both", expand=True, padx=10)
+
+        service_vars = {service: tk.IntVar() for service in self.service_prices.keys()}
+        for service, var in service_vars.items():
+            service_check = customtkinter.CTkCheckBox(scroll_frame, text=f"{service}  ➔  ${self.service_prices[service]}", variable=var, font=("Montserrat", 12), checkbox_width=20, checkbox_height=20, border_color="#6A4C93", hover_color="#A17BCA", fg_color="#6A4C93")
+            service_check.pack(anchor="w", pady=3)
+
+        return service_vars
+
+    def create_package_selection(self, parent):
+        package_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        package_frame.place(x=60, y=400)
+
+        package_icon = customtkinter.CTkLabel(package_frame, text="📦", font=("Segoe UI Emoji", 16))
+        package_icon.pack(side="left")
+
+        package_var = tk.StringVar(value="None")
+        package_combobox = customtkinter.CTkComboBox(package_frame, variable=package_var, values=["None"] + list(self.packages.keys()), font=("Montserrat", 14), dropdown_font=("Montserrat", 12), button_color="#6A4C93", border_color="#6A4C93", dropdown_hover_color="#A17BCA", width=250)
+        package_combobox.pack(side="left", padx=5)
+
+        return package_var
+
+    def create_stylist_selection(self, parent):
+        stylist_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        stylist_frame.place(x=52, y=430)
+
+        customtkinter.CTkLabel(
+            stylist_frame, 
+            text="Preferred Stylist:", 
+           font=("Segoe UI Emoji", 16), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        customtkinter.CTkLabel(stylist_frame, text="✂️").pack(side="left")
+        
+
+        self.stylist_var = tk.StringVar(value="Select Stylist")
+        stylist_combobox = customtkinter.CTkComboBox(stylist_frame, variable=self.stylist_var, values=["None"] + self.get_stylist_options(), font=("Montserrat", 14), dropdown_font=("Montserrat", 12), button_color="#6A4C93", border_color="#6A4C93", dropdown_hover_color="#A17BCA", width=250)
+        stylist_combobox.pack(fill="x", pady=5)
+
+        return stylist_combobox
+
+    def get_stylist_options(self):
+        try:
+            connection = create_db_connection()
+            cursor = connection.cursor()
+            cursor.execute("SELECT name, availability FROM stylists")
+            stylists = cursor.fetchall()
+            cursor.close()
+            connection.close()
+
+            options = []
+            for stylist in stylists:
+                name = stylist[0]
+                availability = stylist[1]
+                if availability:
+                    options.append(f"{name} - Available")
+                else:
+                    options.append(f"{name} - Busy")
+
+            return options
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", f"Error: {err}")
+            return []
+
+    def get_stylist_options(self):
+        # This function should return a list of stylist names and their availability
+        # For example, it could query the database to get the current availability of each stylist
+        # Here, we'll use a static list for demonstration purposes
+        stylists = [
+            "Stylist A - Available",
+            "Stylist B - Busy",
+            "Stylist C - Available"
+        ]
+        return stylists
+
+
+    def create_specifications_entry(self, parent):
+        specs_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        specs_frame.place(x=900, y=400)
+
+        specifications_entry = customtkinter.CTkTextbox(specs_frame, height=80, width=300, font=("Montserrat", 12), fg_color="#404040", border_color="#6A4C93")
+        specifications_entry.pack()
+
+        char_counter = customtkinter.CTkLabel(specs_frame, text="0/200", text_color="#808080", font=("Montserrat", 10))
+        char_counter.pack(anchor="e")
+        specifications_entry.bind("<KeyRelease>", lambda _: self.update_char_counter(specifications_entry, char_counter))
+
+        return specifications_entry
+
+    def create_confirm_button(self, parent):
+        confirm_button = customtkinter.CTkButton(parent, text="CONFIRM   ➔", command=self.confirm_walk_in, fg_color="#6A4C93", hover_color="#A17BCA", font=("Montserrat", 14, "bold"), border_width=2, border_color="#FFFFFF", corner_radius=20, width=200, height=45)
+        confirm_button.pack(pady=15)
+        confirm_button.bind("<Enter>", lambda _: confirm_button.configure(fg_color="#8B6BAC"))
+        confirm_button.bind("<Leave>", lambda _: confirm_button.configure(fg_color="#6A4C93"))
+
+    def update_char_counter(self, text_widget, counter_label):
+        text = text_widget.get("1.0", "end-1c")
+        counter_label.configure(text=f"{len(text)}/200")
+        if len(text) >= 190:
+            counter_label.configure(text_color="#FF5555")
+        else:
+            counter_label.configure(text_color="#808080")
+
+    def confirm_walk_in(self):
+        client_name = self.walk_in_client_name_entry.get()
+        selected_services = [service for service, var in self.walk_in_service_vars.items() if var.get()]
+        total_price = sum(self.service_prices[service] for service in selected_services)
+        package_price = 0
+
+        if self.walk_in_package_var.get() != "None":
+            package_services, package_price = self.packages[self.walk_in_package_var.get()]
+            total_price += package_price
+
+        specifications = self.walk_in_specifications_entry.get("1.0", "end-1c").strip()
+        specifications_str = specifications if specifications else "None"
+
+        stylist = self.stylist_var.get()
+        if stylist == "Select Stylist":
+            stylist = "N/A"  # Default to N/A if no stylist is selected
+
+        if client_name and selected_services:
+            self.appointment_list_tree.insert("", "end", values=(
+                client_name, 
+                ", ".join(selected_services), 
+                stylist, 
+                specifications_str, 
+                f"${total_price}", 
+                "Available", 
+                self.walk_in_package_var.get()
+            ))
+            self.walk_in_client_name_entry.delete(0, tk.END)
+            for var in self.walk_in_service_vars.values():
+                var.set(0)
+            self.walk_in_package_var.set("None")
+            self.walk_in_specifications_entry.delete("1.0", tk.END)
+            messagebox.showinfo("Success", "Walk-in appointment confirmed!")
+        else:
+            messagebox.showerror("Input Error", "Please fill in all required fields.")
+
+    def create_appointment_list(self):
+        frame = customtkinter.CTkFrame(self.root, fg_color="#3E3E3E", corner_radius=15)
+        label = customtkinter.CTkLabel(frame, text="Appointment List", font=("Arial", 20, "bold"), text_color="white")
+        label.pack(pady=10)
+
+        self.appointment_list_tree = self.create_appointment_treeview(frame)
+
+        # Buttons
+        self.create_appointment_buttons(frame)
+
+        self.sections["appointment_list"] = frame
+
+    def create_appointment_treeview(self, parent):
+        tree = ttk.Treeview(parent, columns=("Client Name", "Services", "Stylist", "Specifications","Package", "Availability",  "Total Price"), show="headings", style="Custom.Treeview")
+        for col in ("Client Name", "Services", "Stylist", "Specifications", "Package", "Availability", "Total Price"):
+            tree.heading(col, text=col)
+
+        # Scrollbars
+        y_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        x_scrollbar = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+
+        tree.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        y_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        x_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        return tree
+
+    def create_appointment_buttons(self, parent):
+        button_frame = customtkinter.CTkFrame(parent, fg_color="transparent")
+        button_frame.pack(pady=10)
+
+        print_receipt_button = customtkinter.CTkButton(button_frame, text="Print Receipt", command=self.print_receipt_from_appointment_list,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        print_receipt_button.pack(side=tk.LEFT)
+
+        send_payment_button = customtkinter.CTkButton(button_frame, text="Send to Payment", command=self.send_to_payment,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        send_payment_button.pack(side=tk.LEFT, padx=10)
+
+        remove_button = customtkinter.CTkButton(button_frame, text="Remove", command=self.remove_inquiry,  fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20)
+        remove_button.pack(side=tk.LEFT)
+ 
+    def load_last_receipt_id(self):
+        """Load the last used receipt ID from a file."""
+        if os.path.exists("last_receipt_id.txt"):
+            with open("last_receipt_id.txt", "r") as file:
+                return int(file.read().strip())
+        return 0  # Default to 0 if the file does not exist
+
+    def save_last_receipt_id(self):
+        """Save the last used receipt ID to a file."""
+        with open("last_receipt_id.txt", "w") as file:
+            file.write(str(self.last_receipt_id))
+
+    def print_receipt_from_appointment_list(self):
+        selected_item = self.appointment_list_tree.selection()
+        if not selected_item:
+            messagebox.showerror("Selection Error", "Please select an appointment to print the receipt.")
+            return
+        
+        appointment_details = self.appointment_list_tree.item(selected_item, "values")
+        if len(appointment_details) < 7:  # Ensure all details are present
+            messagebox.showerror("Data Error", "Appointment details are incomplete.")
+            return
+        
+        client_name, services, stylist, specifications, total_price, availability, package = appointment_details
+        
+        # Increment the receipt ID for each new receipt
+        self.last_receipt_id += 1
+        receipt_id = f"{self.last_receipt_id:03}"  # Format ID as three digits (001, 002, etc.)
+        
+        self.print_customer_receipt(client_name, receipt_id)  # Customer receipt
+        self.print_beautician_receipt(stylist, services, receipt_id)  # Beautician receipt
+        
+        self.save_last_receipt_id()  # Save the updated receipt ID
+
+    def print_customer_receipt(self, client_name, receipt_id):
+        # Create a new window for the customer's receipt
+        customer_receipt_window = customtkinter.CTkToplevel(self.root)
+        customer_receipt_window.title("Customer Receipt")
+        customer_receipt_window.geometry("500x600")
+        customer_receipt_window.configure(bg="#FFFFFF")  # White background for receipt
+
+        # Main frame for the customer's receipt
+        main_frame = customtkinter.CTkFrame(customer_receipt_window, fg_color="#FFFFFF", corner_radius=15)
+        main_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+
+        # Receipt Header
+        receipt_label = customtkinter.CTkLabel(main_frame, text="🌟 Customer Receipt 🌟", font=("Arial", 24, "bold"), text_color="#333333")
+        receipt_label.pack(pady=10)
+
+        # Receipt Details
+        date_label = customtkinter.CTkLabel(main_frame, text=f"Date: {datetime.now().strftime('%Y-%m-%d')}", font=("Arial", 12), text_color="#333333")
+        date_label.pack(pady=5)
+
+        receipt_number_label = customtkinter.CTkLabel(main_frame, text=f"Receipt No: {receipt_id}", font=("Arial", 12), text_color="#333333")
+        receipt_number_label.pack(pady=5)
+
+        customer_label = customtkinter.CTkLabel(main_frame, text=f"Customer: {client_name}", font=("Arial", 16), text_color="#333333")
+        customer_label.pack(pady=5)
+
+        # Close Button
+        close_button = customtkinter.CTkButton(main_frame, text="Close", command=customer_receipt_window.destroy, fg_color="#6A4C93", hover_color="#A17BCA", font=("Arial", 14, "bold"))
+        close_button.pack(pady=10)
+
+    def print_beautician_receipt(self, stylist, services, receipt_id):
+        # Create a new window for the beautician's receipt
+        beautician_receipt_window = customtkinter.CTkToplevel(self.root)
+        beautician_receipt_window.title("Beautician Receipt")
+        beautician_receipt_window.geometry("500x600")
+        beautician_receipt_window.configure(bg="#FFFFFF")  # White background for receipt
+
+        # Main frame for the beautician's receipt
+        main_frame = customtkinter.CTkFrame(beautician_receipt_window, fg_color="#FFFFFF", corner_radius=15)
+        main_frame.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+
+        # Receipt Header
+        receipt_label = customtkinter.CTkLabel(main_frame, text="🌟 Beautician Receipt 🌟", font=("Arial", 24, "bold"), text_color="#333333")
+        receipt_label.pack(pady=10)
+
+        # Receipt Details
+        date_label = customtkinter.CTkLabel(main_frame, text=f"Date: {datetime.now().strftime('%Y-%m-%d')}", font=("Arial", 12), text_color="#333333")
+        date_label.pack(pady=5)
+
+        receipt_number_label = customtkinter.CTkLabel(main_frame, text=f"Receipt No: {receipt_id}", font=("Arial", 12), text_color="#333333")
+        receipt_number_label.pack(pady=5)
+
+        stylist_label = customtkinter.CTkLabel(main_frame, text=f"Stylist: {stylist}", font=("Arial", 16), text_color="#333333")
+        stylist_label.pack(pady=5)
+
+        # Breakdown of Services
+        service_label = customtkinter.CTkLabel(main_frame, text="Services:", font=("Arial", 16, "bold"), text_color="#333333")
+        service_label.pack(pady=5)
+
+        services_list = services.split(", ")  # Assuming services are comma-separated
+        for service in services_list:
+            service_detail_label = customtkinter.CTkLabel(main_frame, text=f"✨ {service }", font=("Arial", 14), text_color="#333333")
+            service_detail_label.pack(anchor="w", padx=20)
+
+        # Close Button
+        close_button = customtkinter.CTkButton(main_frame, text="Close", command=beautician_receipt_window.destroy, fg_color="#6A4C93", hover_color="#A17BCA", font=("Arial", 14, "bold"))
+        close_button.pack(pady=10)
+
+    def create_payment_section(self):
+        frame = customtkinter.CTkFrame(self.root, fg_color="#3E3E3E", corner_radius=15)
+        self.sections["payment"] = frame
+        
+
+        # Title Label
+        label = customtkinter.CTkLabel(frame, text="Payment", font=("Arial", 20, "bold"), text_color="white")
+        label.pack(pady=10)
+
+        # Create a frame for the Treeview and Scrollbars
+        treeview_frame = customtkinter.CTkFrame(frame, fg_color="#3E3E3E")
+        treeview_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=10)
+
+        # Treeview for Payment List with Scrollbars
+        self.payment_list_tree = ttk.Treeview(treeview_frame, columns=("ID", "Client name", "Total Price", "Status"), show="headings", style="Custom.Treeview")
+        for col in ("ID", "Client name", "Total Price", "Status"):
+            self.payment_list_tree.heading(col, text=col)
+
+
+
+        # Bind selection event
+        self.payment_list_tree.bind("<<TreeviewSelect>>", self.on_treeview_select)
+
+        # Scrollbars
+        self.payment_list_scrollbar_y = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.payment_list_tree.yview)
+        self.payment_list_scrollbar_x = ttk.Scrollbar(treeview_frame, orient="horizontal", command=self.payment_list_tree.xview)
+        self.payment_list_tree.configure(yscrollcommand=self.payment_list_scrollbar_y.set, xscrollcommand=self.payment_list_scrollbar_x.set)
+
+        # Pack the Treeview and Scrollbars into the treeview frame
+        self.payment_list_tree.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        self.payment_list_scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        self.payment_list_scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Payment Amount Entry
+        self.payment_amount_entry = customtkinter.CTkEntry(treeview_frame, width=300, placeholder_text="Enter Amount Received", font=("Arial", 14), fg_color="#4E4E4E", text_color="white")
+        self.payment_amount_entry.pack(pady=10)
+
+        # Payment Button
+        payment_button = customtkinter.CTkButton(treeview_frame, text="Process Payment", fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20,
+            command=self.process_payment)  # Connect to process_payment
+        payment_button.pack(pady=10)
+
+        # Create a larger blank frame on the right
+        blank_frame = customtkinter.CTkFrame(frame, fg_color="#4E4E4E", corner_radius=15, border_width=2, border_color="#3E3E3E")
+        blank_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Create a frame inside the blank frame for Receipt Billing
+        receipt_billing_frame = customtkinter.CTkFrame(blank_frame, fg_color="#3E3E3E", corner_radius=15)
+        receipt_billing_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Label for Receipt Billing
+        receipt_label = customtkinter.CTkLabel(receipt_billing_frame, text="Receipt Billing", 
+                                            font=("Arial", 18, "bold"), text_color="white")
+        receipt_label.pack(pady=10)
+
+        # Text Widget to Display Receipt
+        self.receipt_text = tk.Text(receipt_billing_frame, wrap=tk.WORD, font=("Courier", 12), 
+                                bg="#4E4E4E", fg="white", bd=0)
+        self.receipt_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Buttons for Clear and Print (FIXED POSITIONING)
+        button_frame = customtkinter.CTkFrame(receipt_billing_frame, fg_color="#3E3E3E")
+        button_frame.pack(fill=tk.X, padx=10, pady=(0, 10))  # Added bottom padding
+
+        clear_button = customtkinter.CTkButton(button_frame, text="Clear",
+                                            command=self.clear_receipt,
+                                            fg_color="#6A4C93",
+                                            hover_color="#A17BCA",
+                                            font=("Montserrat", 14, "bold"),
+                                            border_width=2,
+                                            border_color="#FFFFFF",
+                                            corner_radius=20)
+        clear_button.pack(side=tk.LEFT, padx=10, pady=5)  # Added pady
+
+        print_button = customtkinter.CTkButton(button_frame, text="Print",
+                                            command=self.print_receipt,
+                                            fg_color="#6A4C93",
+                                            hover_color="#A17BCA",
+                                            font=("Montserrat", 14, "bold"),
+                                            border_width=2,
+                                            border_color="#FFFFFF",
+                                            corner_radius=20)
+        print_button.pack(side=tk.LEFT, padx=10, pady=5)  # Added pady
+
+    def on_treeview_select(self, event):
+        selected_item = self.payment_list_tree.selection()
+        if selected_item:
+            self.selected_item = self.payment_list_tree.item(selected_item)['values']
+
+    def process_payment(self):
+        # Ensure a payment is selected
+        selected_item = self.payment_list_tree.selection()
+        if not selected_item:
+            messagebox.showerror("Selection Error", "Please select a payment to process.")
+            return
+
+        # Get the selected payment details
+        payment_details = self.payment_list_tree.item(selected_item, "values")
+        if len(payment_details) < 4:  # Ensure all details are present
+            messagebox.showerror("Data Error", "Payment details are incomplete.")
+            return
+
+        # Extract values from the Treeview
+        client_id, client_name, total_price, status = payment_details
+
+        # Validate the total price
+        try:
+            total_price = float(total_price.replace('$', ''))
+        except ValueError:
+            messagebox.showerror("Data Error", "Total price is not a valid number.")
+            return
+
+        # Get the amount received from the entry
+        amount_received = self.payment_amount_entry.get()
+        if not amount_received:
+            messagebox.showerror("Input Error", "Please enter the amount received.")
+            return
+
+        # Validate the amount received
+        try:
+            amount_received = float(amount_received)
+        except ValueError:
+            messagebox.showerror("Input Error", "Please enter a valid amount.")
+            return
+
+        # Calculate change
+        change = amount_received - total_price
+        if change < 0:
+            messagebox.showerror("Payment Error", "Amount received is less than the total price.")
+            return
+
+        # Update the payment status to "Paid" in the Treeview
+        self.payment_list_tree.item(selected_item, values=(client_id, client_name, f"${total_price:.2f}", "Paid"))
+
+        # Update the payment status in the database
+        try:
+            connection = create_db_connection()
+            cursor = connection.cursor()
+            cursor.execute("UPDATE payments SET status = 'Paid' WHERE id = %s", (client_id,))
+            connection.commit()
+            cursor.close()
+            connection.close()
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", f"Error updating payment status: {err}")
+            return
+
+        # Generate and display the receipt
+        self.show_receipt_with_change(client_name, total_price, amount_received, change)
+
+        # Clear the payment amount entry
+        self.payment_amount_entry.delete(0, tk.END)
+
+        # Show success message
+        messagebox.showinfo("Success", "Payment processed successfully!")
+
+    def show_receipt_with_change(self, client_name, total_price, amount_received, change):
+        # Generate receipt with enhanced design
+        receipt = "===========================================\n"
+        receipt += "             BEAUTIQUE SALON            \n"
+        receipt += "===========================================\n"
+        receipt += f"Client Name:               {client_name:<30}\n"
+        receipt += f"Total Price:               ${total_price:<10.2f}\n"
+        receipt += f"Amount Received:           ${amount_received:<10.2f}\n"
+        receipt += f"Change:                    ${change:<10.2f}\n"
+        receipt += "-------------------------------------------\n"
+        receipt += "         THANK YOU FOR YOUR VISIT!\n"
+        receipt += "        We appreciate your business!\n"
+        receipt += "==========================================="
+
+        # Display the receipt in the receipt text widget
+        self.receipt_text.delete(1.0, tk.END)
+        self.receipt_text.insert(tk.END, receipt)
+
+    def clear_receipt(self):
+        self.receipt_text.delete(1.0, tk.END)
+        self.payment_amount_entry.delete(0, tk.END)
+        self.selected_item = None
+
+    def print_receipt(self):
+        receipt_content = self.receipt_text.get(1.0, tk.END)
+        if not receipt_content.strip():
+            messagebox.showerror("Error", "No receipt to print.")
+            return
+
+        # Here you can implement the actual print functionality
+        # For demonstration, we will just show a message
+        messagebox.showinfo("Print", "Receipt printed successfully!")
+        # You can use libraries like win32print or tkinter's print dialog to implement actual printing
+
+    def add_inquiry(self, username, email, datetime_combined):
+        # Insert booking into the database
+        try:
+            connection = create_db_connection()
+            cursor = connection.cursor()
+            cursor.execute("INSERT INTO bookings (username, email, datetime_combined) VALUES (%s, %s, %s)", (username, email, datetime_combined))
+            connection.commit()
+            cursor.close()
+            connection.close()
+            messagebox.showinfo("Success", "Inquiry added successfully!")
+        except mysql.connector.Error as err:
+            messagebox.showerror("Database Error", f"Error: {err}")
+            return
+
+        self.inquiry_list_tree.insert("", "end", values=(username, email, datetime_combined))
+
+    def inquiry_inquiry(self):
+        selected_item = self.inquiry_list_tree.selection()
+        if not selected_item:
+            messagebox.showerror("Selection Error", "Please select a booking to approve.")
+            return
+
+        approval_window = customtkinter.CTkToplevel()
+        approval_window.title("✨ Client Management Portal")
+        approval_window.geometry("800x800")
+        
+        
+        # Center window on screen
+        window_width = 800
+        window_height = 700
+        screen_width = approval_window.winfo_screenwidth()
+        screen_height = approval_window.winfo_screenheight()
+        position_x = int((screen_width - window_width) / 2)
+        position_y = int((screen_height - window_height) / 2)
+        approval_window.geometry(f"+{position_x}+{position_y}")
+
+        # Main container
+        main_frame = customtkinter.CTkFrame(approval_window, fg_color=("white", "#2A2A2A"), corner_radius=15)
+        main_frame.pack(padx=20, pady=20, fill="both", expand=True)
+
+        def submit_approval():
+            client_name = self.client_name_entry.get()
+            selected_services = [service for service, var in service_vars.items() if var.get()]
+            total_price = sum(self.service_prices[service] for service in selected_services)
+            package_price = 0
+            
+            if self.package_var.get() != "None":
+                package_services, package_price = self.packages[self.package_var.get()]
+                total_price += package_price
+            
+            stylist = self.stylist_var.get()
+            availability = self.availability_var.get()
+            specifications = self.specifications_entry.get()
+            specifications_str = specifications if specifications else "None"
+            
+            self.appointment_list_tree.insert("", "end", values=(
+                client_name, 
+                ", ".join(selected_services), 
+                stylist, 
+                specifications_str, 
+                f"${total_price}", 
+                availability, 
+                self.package_var.get()
+            ))
+            self.inquiry_list_tree.delete(selected_item)
+            approval_window.destroy()
+
+        # Header Section
+        header_frame = customtkinter.CTkFrame(main_frame, fg_color="#6A4C93", corner_radius=12)
+        header_frame.pack(fill="x", padx=10, pady=10)
+
+        title_label = customtkinter.CTkLabel(
+            header_frame, 
+            text="🎨 Client Information", 
+            font=("Poppins", 24, "bold"), 
+            text_color="white"
+        )
+        title_label.pack(pady=15)
+
+        # Content Frame
+        content_frame = customtkinter.CTkFrame(main_frame, fg_color="transparent")
+        content_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Client Name Entry
+        name_frame = customtkinter.CTkFrame(content_frame, fg_color="transparent")
+        name_frame.grid(row=0, column=0, columnspan=2, pady=(0, 10), sticky="ew")
+        
+        customtkinter.CTkLabel(
+            name_frame, 
+            text="👤 Client Name:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(side="left", padx=(0, 10))
+        
+        self.client_name_entry = customtkinter.CTkEntry(
+            name_frame, 
+            placeholder_text="Enter client name...",
+            font=("Poppins", 12),
+            corner_radius=8,
+            width=300
+        )
+        self.client_name_entry.pack(side="left", fill="x", expand=True)
+
+        # Services Section
+        services_container = customtkinter.CTkFrame(content_frame, fg_color="#404040")
+        services_container.grid(row=1, column=0, pady=10, sticky="nsew")
+        
+        customtkinter.CTkLabel(
+            services_container, 
+            text="💅 Select Services:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        
+        service_vars = {service: tk.IntVar() for service in self.service_prices.keys()}
+        
+
+        services_scroll = customtkinter.CTkScrollableFrame(
+            services_container, 
+            width=300, 
+            height=150,
+            fg_color="#404040"
+        )
+        services_scroll.pack(fill="both", expand=True)
+        
+        for service, price in self.service_prices.items():
+            service_check = customtkinter.CTkCheckBox(
+                services_scroll,
+                text=f"✨ {service} - ${price}",
+                variable=service_vars[service],
+                font=("Poppins", 12)
+            )
+            service_check.pack(anchor="w", pady=2)
+
+        # Right Column
+        right_column = customtkinter.CTkFrame(content_frame, fg_color="transparent")
+        right_column.grid(row=1, column=1, padx=20, pady=10, sticky="nsew")
+
+        # Package Selection
+        package_frame = customtkinter.CTkFrame(right_column, fg_color="transparent")
+        package_frame.pack(fill="x", pady=10)
+        
+        customtkinter.CTkLabel(
+            package_frame, 
+            text="🎁 Package:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        
+        self.package_var = tk.StringVar(value="None")
+        package_combobox = customtkinter.CTkComboBox(
+            package_frame,
+            variable=self.package_var,
+            values=["None"] + list(self.packages.keys()),
+            width=200
+        )
+        package_combobox.pack(fill="x", pady=5)
+
+        # Stylist Selection
+        stylist_frame = customtkinter.CTkFrame(right_column, fg_color="transparent")
+        stylist_frame.pack(fill="x", pady=10)
+        
+        customtkinter.CTkLabel(
+            stylist_frame, 
+            text="✂️ Preferred Stylist:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        
+        self.stylist_var = tk.StringVar(value="A")
+        for stylist in ["A", "B", "C"]:
+            customtkinter.CTkRadioButton(
+                stylist_frame,
+                text=stylist,
+                variable=self.stylist_var,
+                value=stylist,
+                fg_color="#6A4C93"
+            ).pack(anchor="w", pady=2)
+
+        # Availability
+        availability_frame = customtkinter.CTkFrame(right_column, fg_color="transparent")
+        availability_frame.pack(fill="x", pady=10)
+        
+        customtkinter.CTkLabel(
+            availability_frame, 
+            text="📅 Availability:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        
+        self.availability_var = tk.StringVar(value="Available")
+        for option in ["Available", "Not Available"]:
+            customtkinter.CTkRadioButton(
+                availability_frame,
+                text=option,
+                variable=self.availability_var,
+                value=option,
+                fg_color="#6A4C93"
+            ).pack(anchor="w", pady=2)
+
+        # Specifications
+        specs_frame = customtkinter.CTkFrame(content_frame, fg_color="transparent")
+        specs_frame.grid(row=2, column=0, columnspan=2, pady=20, sticky="ew")
+        
+        customtkinter.CTkLabel(
+            specs_frame, 
+            text="📝 Special Requests:", 
+            font=("Poppins", 14, "bold"), 
+            text_color="#6A4C93"
+        ).pack(anchor="w")
+        
+        self.specifications_entry = customtkinter.CTkEntry(
+            specs_frame,
+            placeholder_text="Enter any special requirements...",
+            height=80, width=300
+        )
+        self.specifications_entry.pack(fill="x", pady=5)
+
+        # Submit Button
+        submit_button = customtkinter.CTkButton(
+            main_frame,
+            text="Submit Approval",
+            command=submit_approval,
+             fg_color="#6A4C93",
+            hover_color="#A17BCA",
+            font=("Montserrat", 14, "bold"),
+            border_width=2,
+            border_color="#FFFFFF",
+            corner_radius=20,
+            height=40,
+            width=200
+        )
+        submit_button.pack()
+        
+
+        # Footer
+        footer_frame = customtkinter.CTkFrame(main_frame, fg_color="transparent")
+        footer_frame.pack(fill="x", pady=10)
+
+        customtkinter.CTkLabel(
+            footer_frame,
+            text="🌟 Creating Beauty, One Client at a Time 🌟",
+            font=("Poppins", 12, "italic"),
+            text_color="#6A4C93"
+        ).pack(pady=10, side="left")
+
+        # Configure grid weights
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.columnconfigure(1, weight=1)
+        content_frame.rowconfigure(1, weight=1)
+
+#remove function
+def send_to_payment(self):
+    selected_item = self.appointment_list_tree.selection()
+    if not selected_item:
+        messagebox.showerror("Selection Error", "Please select an appointment to send to payment.")
+        return
+
+    appointment_details = self.appointment_list_tree.item(selected_item, "values")
+    if len(appointment_details) < 8:  # Ensure all details are present (including ID)
+        messagebox.showerror("Data Error", "Appointment details are incomplete.")
+        return
+
+    # Extract the ID and other details
+    appointment_id, client_name, services, stylist, specifications, total_price, availability, package = appointment_details
+
+    # Add the appointment to the payment list with the ID
+    self.payment_list_tree.insert("", "end", values=(appointment_id, client_name, total_price, "Pending"))
+
+    # Remove the appointment from the appointment list
+    self.appointment_list_tree.delete(selected_item)
+
+    def remove_inquiry(self):
+        selected_item = self.inquiry_list_tree.selection()
+        if not selected_item:
+            messagebox.showerror("Selection Error", "Please select a booking to remove.")
+            return
+        self.inquiry_list_tree.delete(selected_item)
+
+    def remove_appointment_list(self):
+        selected_item = self.appointment_list_tree.selection()
+        if not selected_item:
+            messagebox.showerror("Selection Error", "Please select an appointment to remove.")
+            return
+        self.appointment_list_tree.delete(selected_item)
+
+    def logout(self):
+        # Close the staff window and return to the login window or exit
+        self.root.destroy() 
+          # Close the staff window
+
+if __name__ == "__main__":
+    root = customtkinter.CTk()
+    staff_window = StaffWindow(root)
+    booking_form = BookingForm(staff_window)
+    root.mainloop()
